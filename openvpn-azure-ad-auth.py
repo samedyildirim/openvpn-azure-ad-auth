@@ -8,14 +8,12 @@ an authentication token from Azure AD.
 #pylint: disable=invalid-name
 
 import binascii
-#import hashlib
-#from hmac import compare_digest
 from backports.pbkdf2 import pbkdf2_hmac, compare_digest
 import logging
 import os
 import sys
 
-import adal
+import msal
 import requests
 import yaml
 
@@ -37,13 +35,6 @@ CONFIG_FILE = 'config.yaml'
 
 def main(config_file):
     try:
-        username = os.environ['username']
-        password = os.environ['password']
-    except KeyError:
-        logger.error("Environment variables `username` and `password` must be set")
-        failure()
-
-    try:
         with open(config_file) as cfg:
             config = yaml.load(cfg.read())
     except IOError as err:
@@ -64,9 +55,9 @@ def main(config_file):
         logger.error("invalid config file! could not find %s", err)
         failure()
 
-    token_cache_file = config.get('token_cache_file')
-    token_cache = read_token_cache(token_cache_file)
-    context = adal.AuthenticationContext(authority_url, cache=token_cache)
+#    token_cache_file = config.get('token_cache_file')
+#    token_cache = read_token_cache(token_cache_file)
+    context = msal.PublicClientApplication(client_id, authority=authority_url)
 
     if len(sys.argv) == 2 and sys.argv[1] == "--consent":
         if obtain_consent(context, resource, client_id):
@@ -74,9 +65,18 @@ def main(config_file):
         else:
             failure()
 
+    try:
+        username = os.environ['username']
+        password = os.environ['password']
+    except KeyError:
+        logger.error("Environment variables `username` and `password` must be set")
+        failure()
+
     logger.info("request recieved to authenticate user %s", username)
 
-    token, save_cache = get_token(context, resource, username, password, client_id)
+#    token, save_cache = get_token(context, resource, username, password, client_id)
+    save_cache = false
+    token = get_token(context, resource, username, password, client_id)
     if token is None:
         failure()
 
@@ -146,49 +146,15 @@ def obtain_consent(context, resource, client_id):
     else:
         return True
 
-
 def get_token(context, resource, username, password, client_id):
-    """
+    result = context.acquire_token_by_username_password(username,password,[])
 
-    Get a JWT as evidence of authentication.
-
-    Using the provided ADAL authentication context, attempt to get a JWT from the cache (if
-    enabled). If the cache misses or the cached refresh token cannot be exchanged, interrogate
-    AAD for a new JWT.
-
-    Returns: Either a valid token bundle or None, and a flag indicating that the cache is stale
-               and should be updated.
-
-    Side-effects: the token bundle that is returned is a reference to the token inside the
-                    context's cache member. As such, this function modifies `context`.
-
-    """
-    try:
-        # Get a token from the cache (avoids a round-trip to AAD if the cached token hasn't expired)
-        try:
-            token = context.acquire_token(resource, username, client_id)
-        except adal.adal_error.AdalError as err: # see issue #3
-            token = None
-        if token is not None:
-            password_hmac = hash_password(token, password)
-            if compare_digest(bytes(password_hmac), bytes(token['passwordHash'])):
-                return token, False
-                logger.info("authenticated user %s from cache", username)
-
-        logger.debug("could not get a token from cache; acquiring from AAD")
-        token = context.acquire_token_with_username_password(
-            resource,
-            username,
-            password,
-            client_id
-        )
-    except adal.adal_error.AdalError as err:
+    if "access_token" in result:
+        token = result["access_token"]
+        return token
+    else
         logger.info("User %s failed to authenticate: %s", username, err)
-        return None, False
-    token['passwordHash'] = hash_password(token, password)
-    logger.info("authenticated user %s from AAD request", username)
-    return token, True
-
+        return None
 
 def hash_password(token, password):
     return binascii.hexlify(pbkdf2_hmac('sha512', password, token['accessToken'], 128000))
